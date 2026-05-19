@@ -38,3 +38,7 @@ Builds the browser bundle.
 ## Database
 
 The server auto-creates a single `sites` table in Neon Postgres on startup. Public data is read from that table, and the admin page uses it to add, update, or remove sites.
+
+## Deployment
+
+Vercel serves the static build from `dist`, the API from `api/[...path].ts`, and rewrites `/admin` to the SPA shell in `vercel.json`.
