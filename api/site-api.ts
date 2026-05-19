@@ -33,7 +33,7 @@ export type SiteInput = {
 };
 
 type ApiOptions = {
-  databaseUrl: string;
+  databaseUrl?: string;
   adminSecret?: string;
 };
 
@@ -173,15 +173,15 @@ function mapSite(row: SiteRow): SiteRecord {
 }
 
 export function createSitesApi({ databaseUrl, adminSecret = "" }: ApiOptions) {
-  if (!databaseUrl) {
-    throw new Error("DATABASE_URL is required.");
-  }
-
-  const sql = neon(databaseUrl);
+  const sql = databaseUrl ? neon(databaseUrl) : null;
   const adminCookie = "iiith_admin_session";
   const adminTtlMs = 1000 * 60 * 60 * 12;
 
   async function ensureSchema() {
+    if (!sql) {
+      return;
+    }
+
     await sql`
       CREATE TABLE IF NOT EXISTS sites (
         id text PRIMARY KEY,
@@ -198,6 +198,10 @@ export function createSitesApi({ databaseUrl, adminSecret = "" }: ApiOptions) {
   }
 
   async function listSites() {
+    if (!sql) {
+      return [];
+    }
+
     const rows = (await sql`
       SELECT id, url, title, description, image, favicon, hostname, created_at, updated_at
       FROM sites
@@ -208,6 +212,10 @@ export function createSitesApi({ databaseUrl, adminSecret = "" }: ApiOptions) {
   }
 
   async function getSiteById(id: string) {
+    if (!sql) {
+      return null;
+    }
+
     const rows = (await sql`
       SELECT id, url, title, description, image, favicon, hostname, created_at, updated_at
       FROM sites
@@ -353,191 +361,216 @@ export function createSitesApi({ databaseUrl, adminSecret = "" }: ApiOptions) {
   }
 
   async function handleRequest(request: Request) {
-    await ready();
-
-    const { pathname } = new URL(request.url);
-    const segments = pathname.split("/").filter(Boolean);
-    const method = request.method.toUpperCase();
-
-    if (pathname === "/api/sites" && method === "GET") {
-      return json({ sites: await listSites() });
+    if (!sql) {
+      return json({ error: "DATABASE_URL is not configured." }, 503);
     }
 
-    if (pathname === "/api/admin/status" && method === "GET") {
-      return json({
-        authenticated: isAuthenticated(request),
-        configured: Boolean(adminSecret),
-      });
-    }
-
-    if (pathname === "/api/admin/login" && method === "POST") {
-      if (!adminSecret) {
-        return json({ error: "ADMIN_PORTAL_PASSCODE is not configured." }, 503);
-      }
-
-      const body = (await request.json().catch(() => null)) as { passcode?: string } | null;
-      const passcode = body?.passcode ?? "";
-
-      if (passcode.length !== adminSecret.length) {
-        return json({ error: "Invalid passcode." }, 401);
-      }
-
-      if (!timingSafeEqual(Buffer.from(passcode), Buffer.from(adminSecret))) {
-        return json({ error: "Invalid passcode." }, 401);
-      }
-
+    try {
+      await ready();
+    } catch (error) {
       return json(
-        { ok: true },
-        200,
         {
-          "Set-Cookie": mintSessionCookie(),
+          error:
+            error instanceof Error
+              ? error.message
+              : "Database initialization failed.",
         },
+        503,
       );
     }
 
-    if (pathname === "/api/admin/logout" && method === "POST") {
-      return json(
-        { ok: true },
-        200,
-        {
-          "Set-Cookie": clearSessionCookie(),
-        },
-      );
-    }
+    try {
+      const { pathname } = new URL(request.url);
+      const segments = pathname.split("/").filter(Boolean);
+      const method = request.method.toUpperCase();
 
-    if (segments[0] === "api" && segments[1] === "admin" && segments[2] === "sites" && segments.length === 3) {
-      if (method === "POST") {
-        if (!isAuthenticated(request)) {
-          return json({ error: "Unauthorized." }, 401);
+      if (pathname === "/api/sites" && method === "GET") {
+        return json({ sites: await listSites() });
+      }
+
+      if (pathname === "/api/admin/status" && method === "GET") {
+        return json({
+          authenticated: isAuthenticated(request),
+          configured: Boolean(adminSecret),
+        });
+      }
+
+      if (pathname === "/api/admin/login" && method === "POST") {
+        if (!adminSecret) {
+          return json({ error: "ADMIN_PORTAL_PASSCODE is not configured." }, 503);
         }
 
-        const body = (await request.json().catch(() => null)) as SiteInput | null;
-        const input = body ?? {};
+        const body = (await request.json().catch(() => null)) as { passcode?: string } | null;
+        const passcode = body?.passcode ?? "";
 
-        try {
-          const site = await buildSite({ ...input, syncMetadata: true });
-          const id = randomUUID();
+        if (passcode.length !== adminSecret.length) {
+          return json({ error: "Invalid passcode." }, 401);
+        }
+
+        if (!timingSafeEqual(Buffer.from(passcode), Buffer.from(adminSecret))) {
+          return json({ error: "Invalid passcode." }, 401);
+        }
+
+        return json(
+          { ok: true },
+          200,
+          {
+            "Set-Cookie": mintSessionCookie(),
+          },
+        );
+      }
+
+      if (pathname === "/api/admin/logout" && method === "POST") {
+        return json(
+          { ok: true },
+          200,
+          {
+            "Set-Cookie": clearSessionCookie(),
+          },
+        );
+      }
+
+      if (segments[0] === "api" && segments[1] === "admin" && segments[2] === "sites" && segments.length === 3) {
+        if (method === "POST") {
+          if (!isAuthenticated(request)) {
+            return json({ error: "Unauthorized." }, 401);
+          }
+
+          const body = (await request.json().catch(() => null)) as SiteInput | null;
+          const input = body ?? {};
+
+          try {
+            const site = await buildSite({ ...input, syncMetadata: true });
+            const id = randomUUID();
+            const rows = (await sql`
+              INSERT INTO sites (id, url, title, description, image, favicon, hostname, created_at, updated_at)
+              VALUES (
+                ${id},
+                ${site.url},
+                ${site.title},
+                ${site.description},
+                ${site.image},
+                ${site.favicon},
+                ${site.hostname},
+                now(),
+                now()
+              )
+              ON CONFLICT (url) DO NOTHING
+              RETURNING id, url, title, description, image, favicon, hostname, created_at, updated_at
+            `) as SiteRow[];
+
+            if (!rows.length) {
+              return json({ error: "A site with that URL already exists." }, 409);
+            }
+
+            const created = rows[0];
+            if (!created) {
+              return json({ error: "Unable to add site." }, 500);
+            }
+
+            return json({
+              site: mapSite(created),
+              sites: await listSites(),
+            });
+          } catch (error) {
+            return json(
+              {
+                error: error instanceof Error ? error.message : "Unable to add site.",
+              },
+              400,
+            );
+          }
+        }
+      }
+
+      if (segments[0] === "api" && segments[1] === "admin" && segments[2] === "sites" && segments.length === 4) {
+        const id = decodeURIComponent(segments[3] ?? "");
+        if (!id) {
+          return json({ error: "Site not found." }, 404);
+        }
+
+        if (method === "PUT") {
+          if (!isAuthenticated(request)) {
+            return json({ error: "Unauthorized." }, 401);
+          }
+
+          const existing = await getSiteById(id);
+          if (!existing) {
+            return json({ error: "Site not found." }, 404);
+          }
+
+          const body = (await request.json().catch(() => null)) as SiteInput | null;
+          const input = body ?? {};
+          const nextUrl = normalizeUrl(input.url ?? existing.url);
+          const nextInput = {
+            ...input,
+            url: nextUrl,
+            syncMetadata: input.syncMetadata ?? nextUrl !== existing.url,
+          };
+
+          try {
+            const site = await buildSite(nextInput, existing);
+            const rows = (await sql`
+              UPDATE sites
+              SET
+                url = ${site.url},
+                title = ${site.title},
+                description = ${site.description},
+                image = ${site.image},
+                favicon = ${site.favicon},
+                hostname = ${site.hostname},
+                updated_at = now()
+              WHERE id = ${id}
+              RETURNING id, url, title, description, image, favicon, hostname, created_at, updated_at
+            `) as SiteRow[];
+
+            const updated = rows[0];
+            if (!updated) {
+              return json({ error: "Unable to update site." }, 500);
+            }
+
+            return json({
+              site: mapSite(updated),
+              sites: await listSites(),
+            });
+          } catch (error) {
+            return json(
+              {
+                error: error instanceof Error ? error.message : "Unable to update site.",
+              },
+              400,
+            );
+          }
+        }
+
+        if (method === "DELETE") {
+          if (!isAuthenticated(request)) {
+            return json({ error: "Unauthorized." }, 401);
+          }
+
           const rows = (await sql`
-            INSERT INTO sites (id, url, title, description, image, favicon, hostname, created_at, updated_at)
-            VALUES (
-              ${id},
-              ${site.url},
-              ${site.title},
-              ${site.description},
-              ${site.image},
-              ${site.favicon},
-              ${site.hostname},
-              now(),
-              now()
-            )
-            ON CONFLICT (url) DO NOTHING
-            RETURNING id, url, title, description, image, favicon, hostname, created_at, updated_at
-          `) as SiteRow[];
+            DELETE FROM sites
+            WHERE id = ${id}
+            RETURNING id
+          `) as { id: string }[];
 
           if (!rows.length) {
-            return json({ error: "A site with that URL already exists." }, 409);
+            return json({ error: "Site not found." }, 404);
           }
 
-          const created = rows[0];
-          if (!created) {
-            return json({ error: "Unable to add site." }, 500);
-          }
-
-          return json({
-            site: mapSite(created),
-            sites: await listSites(),
-          });
-        } catch (error) {
-          return json(
-            {
-              error: error instanceof Error ? error.message : "Unable to add site.",
-            },
-            400,
-          );
+          return json({ ok: true, sites: await listSites() });
         }
       }
+
+      return json({ error: "Not found." }, 404);
+    } catch (error) {
+      return json(
+        {
+          error: error instanceof Error ? error.message : "Unexpected server error.",
+        },
+        500,
+      );
     }
-
-    if (segments[0] === "api" && segments[1] === "admin" && segments[2] === "sites" && segments.length === 4) {
-      const id = decodeURIComponent(segments[3] ?? "");
-      if (!id) {
-        return json({ error: "Site not found." }, 404);
-      }
-
-      if (method === "PUT") {
-        if (!isAuthenticated(request)) {
-          return json({ error: "Unauthorized." }, 401);
-        }
-
-        const existing = await getSiteById(id);
-        if (!existing) {
-          return json({ error: "Site not found." }, 404);
-        }
-
-        const body = (await request.json().catch(() => null)) as SiteInput | null;
-        const input = body ?? {};
-        const nextUrl = normalizeUrl(input.url ?? existing.url);
-        const nextInput = {
-          ...input,
-          url: nextUrl,
-          syncMetadata: input.syncMetadata ?? nextUrl !== existing.url,
-        };
-
-        try {
-          const site = await buildSite(nextInput, existing);
-          const rows = (await sql`
-            UPDATE sites
-            SET
-              url = ${site.url},
-              title = ${site.title},
-              description = ${site.description},
-              image = ${site.image},
-              favicon = ${site.favicon},
-              hostname = ${site.hostname},
-              updated_at = now()
-            WHERE id = ${id}
-            RETURNING id, url, title, description, image, favicon, hostname, created_at, updated_at
-          `) as SiteRow[];
-
-          const updated = rows[0];
-          if (!updated) {
-            return json({ error: "Unable to update site." }, 500);
-          }
-
-          return json({
-            site: mapSite(updated),
-            sites: await listSites(),
-          });
-        } catch (error) {
-          return json(
-            {
-              error: error instanceof Error ? error.message : "Unable to update site.",
-            },
-            400,
-          );
-        }
-      }
-
-      if (method === "DELETE") {
-        if (!isAuthenticated(request)) {
-          return json({ error: "Unauthorized." }, 401);
-        }
-
-        const rows = (await sql`
-          DELETE FROM sites
-          WHERE id = ${id}
-          RETURNING id
-        `) as { id: string }[];
-
-        if (!rows.length) {
-          return json({ error: "Site not found." }, 404);
-        }
-
-        return json({ ok: true, sites: await listSites() });
-      }
-    }
-
-    return json({ error: "Not found." }, 404);
   }
 
   return {

@@ -1,4 +1,4 @@
-import { createSitesApi } from "../src/site-api";
+import { createSitesApi } from "./site-api";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
@@ -17,17 +17,5 @@ async function handle(request: Request) {
 }
 
 export async function GET(request: Request) {
-  return handle(request);
-}
-
-export async function POST(request: Request) {
-  return handle(request);
-}
-
-export async function PUT(request: Request) {
-  return handle(request);
-}
-
-export async function DELETE(request: Request) {
   return handle(request);
 }

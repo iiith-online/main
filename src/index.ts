@@ -1,6 +1,6 @@
 import { serve } from "bun";
 import index from "./index.html";
-import { createSitesApi } from "./site-api";
+import { createSitesApi } from "../api/site-api";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
