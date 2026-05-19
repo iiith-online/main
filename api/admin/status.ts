@@ -1,4 +1,4 @@
-import { createSitesApi } from "../site-api";
+import { createSitesApi } from "../site-api.js";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
