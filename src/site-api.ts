@@ -438,8 +438,13 @@ export function createSitesApi({ databaseUrl, adminSecret = "" }: ApiOptions) {
             return json({ error: "A site with that URL already exists." }, 409);
           }
 
+          const created = rows[0];
+          if (!created) {
+            return json({ error: "Unable to add site." }, 500);
+          }
+
           return json({
-            site: mapSite(rows[0]),
+            site: mapSite(created),
             sites: await listSites(),
           });
         } catch (error) {
@@ -494,8 +499,13 @@ export function createSitesApi({ databaseUrl, adminSecret = "" }: ApiOptions) {
             RETURNING id, url, title, description, image, favicon, hostname, created_at, updated_at
           `) as SiteRow[];
 
+          const updated = rows[0];
+          if (!updated) {
+            return json({ error: "Unable to update site." }, 500);
+          }
+
           return json({
-            site: mapSite(rows[0]),
+            site: mapSite(updated),
             sites: await listSites(),
           });
         } catch (error) {
