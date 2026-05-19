@@ -576,6 +576,15 @@ export function App() {
             <strong className="text-[#c9d1d9]">Disclaimer:</strong> IIIT-H Online is an independent community
             initiative. We are not officially affiliated with, maintained by, or endorsed by the International
             Institute of Information Technology, Hyderabad (IIIT-H).
+            This applies to iiith.online and all of its subdomains, content, including the site directory, codebase, and associated materials. All contributions are voluntary and do not reflect the views or positions of IIIT Hyderabad as a whole and only represent the individual contributors. For any concerns regarding content or conduct, please contact the maintainers directly through our GitHub organization at{" "}
+            <a
+              href="https://github.com/iiith-online"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-400 hover:underline"
+            >
+              https://github.com/iiith-online
+            </a>
           </p>
         </div>
       </footer>
