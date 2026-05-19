@@ -1,29 +1,40 @@
-# bun-react-tailwind-shadcn-template
+# IIIT-H Online
 
-To install dependencies:
+Minimal site directory with a public listing page and a passcode-locked admin page.
+
+## Setup
 
 ```bash
 bun install
 ```
 
-To start a development server:
+Set these environment variables before starting the app:
+
+```bash
+DATABASE_URL=your-neon-connection-string
+ADMIN_PORTAL_PASSCODE=your-passcode
+```
+
+## Commands
 
 ```bash
 bun dev
 ```
 
-To run for production:
+Starts the app in development mode with hot reload.
 
 ```bash
 bun start
 ```
 
-To enable the admin portal, set a passcode before starting the server:
+Runs the production server.
 
 ```bash
-ADMIN_PORTAL_PASSCODE=your-passcode bun start
+bun run build
 ```
 
-You can also override the listening port with `PORT=3001` if `3000` is already in use.
+Builds the browser bundle.
 
-This project was created using `bun init` in bun v1.3.13. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
+## Database
+
+The server auto-creates a single `sites` table in Neon Postgres on startup. Public data is read from that table, and the admin page uses it to add, update, or remove sites.
