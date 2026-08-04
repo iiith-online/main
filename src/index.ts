@@ -35,8 +35,8 @@ const server = serve({
     },
 
     "/api/admin/login": {
-      async POST(req) {
-        return api.handleRequest(req);
+      async POST(req, server) {
+        return api.handleRequest(req, server.requestIP(req)?.address);
       },
     },
 

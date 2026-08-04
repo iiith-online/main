@@ -1,4 +1,5 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { lookup } from "node:dns/promises";
 import { neon } from "@neondatabase/serverless";
 
 type SiteRow = {
@@ -172,10 +173,179 @@ function mapSite(row: SiteRow): SiteRecord {
   };
 }
 
+class PublicUrlError extends Error {}
+
+const BLOCKED_V4: [number, number][] = [
+[0x00000000, 8], // 0.0.0.0/8
+[0x0a000000, 8], // 10.0.0.0/8
+[0x64400000, 10], // 100.64.0.0/10 CGNAT
+[0x7f000000, 8], // 127.0.0.0/8
+[0xa9fe0000, 16], // 169.254.0.0/16 link-local
+[0xac100000, 12], // 172.16.0.0/12
+[0xc0000000, 24], // 192.0.0.0/24
+[0xc0000200, 24], // 192.0.2.0/24 TEST-NET
+[0xc0a80000, 16], // 192.168.0.0/16
+[0xc6120000, 15], // 198.18.0.0/15 benchmarking
+[0xc6336400, 24], // 198.51.100.0/24 TEST-NET
+[0xcb007100, 24], // 203.0.113.0/24 TEST-NET
+[0xe0000000, 4], // 224.0.0.0/4 multicast
+[0xf0000000, 4], // 240.0.0.0/4 reserved
+[0xffffffff, 32], // 255.255.255.255/32
+];
+
+function ipv4ToInt(ip: string): number | null {
+const parts = ip.split(".");
+if (parts.length !== 4) {
+  return null;
+}
+
+let value = 0;
+for (const part of parts) {
+  const octet = Number(part);
+  if (!Number.isInteger(octet) || octet < 0 || octet > 255) {
+    return null;
+  }
+  value = value * 256 + octet;
+}
+
+return value;
+}
+
+function ipv6ToGroups(ip: string): number[] | null {
+const doubleColon = ip.indexOf("::");
+const head = doubleColon === -1 ? ip : ip.slice(0, doubleColon);
+const tail = doubleColon === -1 ? "" : ip.slice(doubleColon + 2);
+const headParts = head ? head.split(":") : [];
+const tailParts = tail ? tail.split(":") : [];
+if (headParts.length + tailParts.length > 8) {
+  return null;
+}
+
+const groups: number[] = [];
+for (let i = 0; i < headParts.length + tailParts.length; i++) {
+  const part = i < headParts.length ? headParts[i] : tailParts[i - headParts.length];
+  if (part.includes(".")) {
+    if (i !== headParts.length + tailParts.length - 1) {
+      return null; // dotted-quad form only valid as the final group
+    }
+    const v4 = ipv4ToInt(part);
+    if (v4 === null) {
+      return null;
+    }
+    groups.push(v4 >> 16, v4 & 0xffff);
+  } else if (/^[0-9a-fA-F]{1,4}$/.test(part)) {
+    groups.push(parseInt(part, 16));
+  } else {
+    return null;
+  }
+}
+if (groups.length > 8) {
+  return null;
+}
+
+const headGroups = groups.slice(0, headParts.length);
+const tailGroups = groups.slice(headParts.length);
+return [...headGroups, ...Array(8 - groups.length).fill(0), ...tailGroups];
+}
+
+export function isBlockedAddress(address: string): boolean {
+const v4 = ipv4ToInt(address);
+if (v4 !== null) {
+  return BLOCKED_V4.some(([base, prefix]) => v4 >= base && v4 < base + 2 ** (32 - prefix));
+}
+
+const groups = ipv6ToGroups(address);
+if (!groups) {
+  return false;
+}
+
+if (groups.every((g) => g === 0) || (groups[7] === 1 && groups.slice(0, 7).every((g) => g === 0))) {
+  return true; // :: and ::1
+}
+if ((groups[0] & 0xfe00) === 0xfc00) {
+  return true; // fc00::/7 unique local
+}
+if ((groups[0] & 0xffc0) === 0xfe80) {
+  return true; // fe80::/10 link-local
+}
+if ((groups[0] & 0xff00) === 0xff00) {
+  return true; // ff00::/8 multicast
+}
+if (groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff) {
+  return isBlockedAddress(`${groups[6] >> 8}.${groups[6] & 0xff}.${groups[7] >> 8}.${groups[7] & 0xff}`);
+}
+
+return false;
+}
+
+async function assertPublicUrl(url: URL) {
+if (url.protocol !== "http:" && url.protocol !== "https:") {
+  throw new PublicUrlError("Only http(s) URLs are allowed.");
+}
+
+const addresses = await lookup(url.hostname, { all: true });
+if (addresses.length === 0 || addresses.some(({ address }) => isBlockedAddress(address))) {
+  throw new PublicUrlError("Private network addresses are not allowed.");
+}
+}
+
+// ponytail: check-then-fetch leaves a DNS-rebinding window; acceptable while only admins
+// trigger metadata fetches — pin IPs + Host header if the surface grows beyond admins.
+async function fetchPublic(url: URL, signal: AbortSignal, redirectsLeft = 5): Promise<Response> {
+await assertPublicUrl(url);
+const response = await fetch(url, {
+  redirect: "manual",
+  signal,
+  headers: {
+    "user-agent": "IIIT-H-Online/1.0",
+    accept: "text/html,application/xhtml+xml",
+  },
+});
+
+if (response.status >= 300 && response.status < 400) {
+  const location = response.headers.get("location");
+  if (!location || redirectsLeft <= 0) {
+    throw new PublicUrlError("Too many redirects.");
+  }
+
+  let next: URL;
+  try {
+    next = new URL(location, url);
+  } catch {
+    throw new PublicUrlError("Invalid redirect target.");
+  }
+  return fetchPublic(next, signal, redirectsLeft - 1);
+}
+
+return response;
+}
+
 export function createSitesApi({ databaseUrl, adminSecret = "" }: ApiOptions) {
   const sql = databaseUrl ? neon(databaseUrl) : null;
   const adminCookie = "iiith_admin_session";
   const adminTtlMs = 1000 * 60 * 60 * 12;
+  const loginLimit = 10;
+  const loginWindowMs = 5 * 60 * 1000;
+  const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+
+  function loginRateLimited(ip: string) {
+    const now = Date.now();
+    const entry = loginAttempts.get(ip);
+    if (!entry || entry.resetAt <= now) {
+      loginAttempts.set(ip, { count: 1, resetAt: now + loginWindowMs });
+      return false;
+    }
+
+    entry.count += 1;
+    if (loginAttempts.size > 1000) {
+      for (const [key, value] of loginAttempts) {
+        if (value.resetAt <= now) {
+          loginAttempts.delete(key);
+        }
+      }
+    }
+    return entry.count > loginLimit;
+  }
 
   async function ensureSchema() {
     if (!sql) {
@@ -229,7 +399,8 @@ export function createSitesApi({ databaseUrl, adminSecret = "" }: ApiOptions) {
     return rows[0] ? mapSite(rows[0]) : null;
   }
 
-  async function fetchSiteMetadata(inputUrl: string) {
+
+async function fetchSiteMetadata(inputUrl: string) {
     const url = normalizeUrl(inputUrl);
     const parsed = new URL(url);
     let html = "";
@@ -239,19 +410,15 @@ export function createSitesApi({ databaseUrl, adminSecret = "" }: ApiOptions) {
       const timeout = setTimeout(() => controller.abort(), 10_000);
 
       try {
-        const response = await fetch(parsed.href, {
-          signal: controller.signal,
-          redirect: "follow",
-          headers: {
-            "user-agent": "IIIT-H-Online/1.0",
-            accept: "text/html,application/xhtml+xml",
-          },
-        });
+        const response = await fetchPublic(parsed, controller.signal);
         html = await response.text();
       } finally {
         clearTimeout(timeout);
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof PublicUrlError) {
+        throw error;
+      }
       html = "";
     }
 
@@ -344,13 +511,13 @@ export function createSitesApi({ databaseUrl, adminSecret = "" }: ApiOptions) {
     const expires = String(Date.now() + adminTtlMs);
     const signature = createHmac("sha256", adminSecret).update(expires).digest("base64url");
 
-    return `${adminCookie}=${expires}.${signature}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${
+    return `${adminCookie}=${expires}.${signature}; HttpOnly; Path=/; SameSite=Lax; Secure; Max-Age=${
       adminTtlMs / 1000
     }`;
   }
 
   function clearSessionCookie() {
-    return `${adminCookie}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`;
+    return `${adminCookie}=; HttpOnly; Path=/; SameSite=Lax; Secure; Max-Age=0`;
   }
 
   let readyPromise: Promise<void> | null = null;
@@ -363,7 +530,7 @@ export function createSitesApi({ databaseUrl, adminSecret = "" }: ApiOptions) {
     return readyPromise;
   }
 
-  async function handleRequest(request: Request) {
+  async function handleRequest(request: Request, clientIp = "unknown") {
     if (!sql) {
       return json({ error: "DATABASE_URL is not configured." }, 503);
     }
@@ -401,6 +568,10 @@ export function createSitesApi({ databaseUrl, adminSecret = "" }: ApiOptions) {
       if (pathname === "/api/admin/login" && method === "POST") {
         if (!adminSecret) {
           return json({ error: "ADMIN_PORTAL_PASSCODE is not configured." }, 503);
+        }
+
+        if (loginRateLimited(clientIp)) {
+          return json({ error: "Too many attempts. Try again later." }, 429);
         }
 
         const body = (await request.json().catch(() => null)) as { passcode?: string } | null;
@@ -566,13 +737,8 @@ export function createSitesApi({ databaseUrl, adminSecret = "" }: ApiOptions) {
       }
 
       return json({ error: "Not found." }, 404);
-    } catch (error) {
-      return json(
-        {
-          error: error instanceof Error ? error.message : "Unexpected server error.",
-        },
-        500,
-      );
+    } catch {
+      return json({ error: "Unexpected server error." }, 500);
     }
   }
 
