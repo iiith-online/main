@@ -195,6 +195,9 @@ export function createSitesApi({ databaseUrl, adminSecret = "" }: ApiOptions) {
         updated_at timestamptz NOT NULL DEFAULT now()
       )
     `;
+
+    // existing databases predate the UNIQUE clause; CREATE TABLE IF NOT EXISTS does not retrofit it
+    await sql`CREATE UNIQUE INDEX IF NOT EXISTS sites_url_key ON sites (url)`;
   }
 
   async function listSites() {
