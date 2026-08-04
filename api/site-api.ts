@@ -1,4 +1,4 @@
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { neon } from "@neondatabase/serverless";
 
@@ -39,7 +39,15 @@ type ApiOptions = {
 };
 
 function json(body: unknown, status = 200, headers: HeadersInit = {}) {
-  return Response.json(body, { status, headers });
+  return Response.json(body, {
+    status,
+    headers: {
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+      "referrer-policy": "no-referrer",
+      ...headers,
+    },
+  });
 }
 
 function normalizeText(value: string | undefined) {
@@ -176,149 +184,157 @@ function mapSite(row: SiteRow): SiteRecord {
 class PublicUrlError extends Error {}
 
 const BLOCKED_V4: [number, number][] = [
-[0x00000000, 8], // 0.0.0.0/8
-[0x0a000000, 8], // 10.0.0.0/8
-[0x64400000, 10], // 100.64.0.0/10 CGNAT
-[0x7f000000, 8], // 127.0.0.0/8
-[0xa9fe0000, 16], // 169.254.0.0/16 link-local
-[0xac100000, 12], // 172.16.0.0/12
-[0xc0000000, 24], // 192.0.0.0/24
-[0xc0000200, 24], // 192.0.2.0/24 TEST-NET
-[0xc0a80000, 16], // 192.168.0.0/16
-[0xc6120000, 15], // 198.18.0.0/15 benchmarking
-[0xc6336400, 24], // 198.51.100.0/24 TEST-NET
-[0xcb007100, 24], // 203.0.113.0/24 TEST-NET
-[0xe0000000, 4], // 224.0.0.0/4 multicast
-[0xf0000000, 4], // 240.0.0.0/4 reserved
-[0xffffffff, 32], // 255.255.255.255/32
+  [0x00000000, 8], // 0.0.0.0/8
+  [0x0a000000, 8], // 10.0.0.0/8
+  [0x64400000, 10], // 100.64.0.0/10 CGNAT
+  [0x7f000000, 8], // 127.0.0.0/8
+  [0xa9fe0000, 16], // 169.254.0.0/16 link-local
+  [0xac100000, 12], // 172.16.0.0/12
+  [0xc0000000, 24], // 192.0.0.0/24
+  [0xc0000200, 24], // 192.0.2.0/24 TEST-NET
+  [0xc0a80000, 16], // 192.168.0.0/16
+  [0xc6120000, 15], // 198.18.0.0/15 benchmarking
+  [0xc6336400, 24], // 198.51.100.0/24 TEST-NET
+  [0xcb007100, 24], // 203.0.113.0/24 TEST-NET
+  [0xe0000000, 4], // 224.0.0.0/4 multicast
+  [0xf0000000, 4], // 240.0.0.0/4 reserved
+  [0xffffffff, 32], // 255.255.255.255/32
 ];
 
 function ipv4ToInt(ip: string): number | null {
-const parts = ip.split(".");
-if (parts.length !== 4) {
-  return null;
-}
-
-let value = 0;
-for (const part of parts) {
-  const octet = Number(part);
-  if (!Number.isInteger(octet) || octet < 0 || octet > 255) {
+  const parts = ip.split(".");
+  if (parts.length !== 4) {
     return null;
   }
-  value = value * 256 + octet;
-}
 
-return value;
+  let value = 0;
+  for (const part of parts) {
+    const octet = Number(part);
+    if (!Number.isInteger(octet) || octet < 0 || octet > 255) {
+      return null;
+    }
+    value = value * 256 + octet;
+  }
+
+  return value;
 }
 
 function ipv6ToGroups(ip: string): number[] | null {
-const doubleColon = ip.indexOf("::");
-const head = doubleColon === -1 ? ip : ip.slice(0, doubleColon);
-const tail = doubleColon === -1 ? "" : ip.slice(doubleColon + 2);
-const headParts = head ? head.split(":") : [];
-const tailParts = tail ? tail.split(":") : [];
-if (headParts.length + tailParts.length > 8) {
-  return null;
-}
-
-const groups: number[] = [];
-for (let i = 0; i < headParts.length + tailParts.length; i++) {
-  const part = i < headParts.length ? headParts[i] : tailParts[i - headParts.length];
-  if (part.includes(".")) {
-    if (i !== headParts.length + tailParts.length - 1) {
-      return null; // dotted-quad form only valid as the final group
-    }
-    const v4 = ipv4ToInt(part);
-    if (v4 === null) {
-      return null;
-    }
-    groups.push(v4 >> 16, v4 & 0xffff);
-  } else if (/^[0-9a-fA-F]{1,4}$/.test(part)) {
-    groups.push(parseInt(part, 16));
-  } else {
+  const doubleColon = ip.indexOf("::");
+  const head = doubleColon === -1 ? ip : ip.slice(0, doubleColon);
+  const tail = doubleColon === -1 ? "" : ip.slice(doubleColon + 2);
+  const headParts = head ? head.split(":") : [];
+  const tailParts = tail ? tail.split(":") : [];
+  if (headParts.length + tailParts.length > 8) {
     return null;
   }
-}
-if (groups.length > 8) {
-  return null;
-}
 
-const headGroups = groups.slice(0, headParts.length);
-const tailGroups = groups.slice(headParts.length);
-return [...headGroups, ...Array(8 - groups.length).fill(0), ...tailGroups];
+  const groups: number[] = [];
+  for (let i = 0; i < headParts.length + tailParts.length; i++) {
+    const part = i < headParts.length ? headParts[i] : tailParts[i - headParts.length];
+    if (part.includes(".")) {
+      if (i !== headParts.length + tailParts.length - 1) {
+        return null; // dotted-quad form only valid as the final group
+      }
+      const v4 = ipv4ToInt(part);
+      if (v4 === null) {
+        return null;
+      }
+      groups.push(v4 >> 16, v4 & 0xffff);
+    } else if (/^[0-9a-fA-F]{1,4}$/.test(part)) {
+      groups.push(parseInt(part, 16));
+    } else {
+      return null;
+    }
+  }
+  if (groups.length > 8) {
+    return null;
+  }
+
+  const headGroups = groups.slice(0, headParts.length);
+  const tailGroups = groups.slice(headParts.length);
+  return [...headGroups, ...Array(8 - groups.length).fill(0), ...tailGroups];
 }
 
 export function isBlockedAddress(address: string): boolean {
-const v4 = ipv4ToInt(address);
-if (v4 !== null) {
-  return BLOCKED_V4.some(([base, prefix]) => v4 >= base && v4 < base + 2 ** (32 - prefix));
-}
+  const v4 = ipv4ToInt(address);
+  if (v4 !== null) {
+    return BLOCKED_V4.some(([base, prefix]) => v4 >= base && v4 < base + 2 ** (32 - prefix));
+  }
 
-const groups = ipv6ToGroups(address);
-if (!groups) {
+  const groups = ipv6ToGroups(address);
+  if (!groups) {
+    return false;
+  }
+
+  if (groups.every((g) => g === 0) || (groups[7] === 1 && groups.slice(0, 7).every((g) => g === 0))) {
+    return true; // :: and ::1
+  }
+  if ((groups[0] & 0xfe00) === 0xfc00) {
+    return true; // fc00::/7 unique local
+  }
+  if ((groups[0] & 0xffc0) === 0xfe80) {
+    return true; // fe80::/10 link-local
+  }
+  if ((groups[0] & 0xff00) === 0xff00) {
+    return true; // ff00::/8 multicast
+  }
+  if (groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff) {
+    return isBlockedAddress(`${groups[6] >> 8}.${groups[6] & 0xff}.${groups[7] >> 8}.${groups[7] & 0xff}`);
+  }
+
   return false;
 }
 
-if (groups.every((g) => g === 0) || (groups[7] === 1 && groups.slice(0, 7).every((g) => g === 0))) {
-  return true; // :: and ::1
-}
-if ((groups[0] & 0xfe00) === 0xfc00) {
-  return true; // fc00::/7 unique local
-}
-if ((groups[0] & 0xffc0) === 0xfe80) {
-  return true; // fe80::/10 link-local
-}
-if ((groups[0] & 0xff00) === 0xff00) {
-  return true; // ff00::/8 multicast
-}
-if (groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff) {
-  return isBlockedAddress(`${groups[6] >> 8}.${groups[6] & 0xff}.${groups[7] >> 8}.${groups[7] & 0xff}`);
-}
-
-return false;
-}
-
-async function assertPublicUrl(url: URL) {
-if (url.protocol !== "http:" && url.protocol !== "https:") {
-  throw new PublicUrlError("Only http(s) URLs are allowed.");
-}
-
-const addresses = await lookup(url.hostname, { all: true });
-if (addresses.length === 0 || addresses.some(({ address }) => isBlockedAddress(address))) {
-  throw new PublicUrlError("Private network addresses are not allowed.");
-}
-}
-
-// ponytail: check-then-fetch leaves a DNS-rebinding window; acceptable while only admins
-// trigger metadata fetches — pin IPs + Host header if the surface grows beyond admins.
 async function fetchPublic(url: URL, signal: AbortSignal, redirectsLeft = 5): Promise<Response> {
-await assertPublicUrl(url);
-const response = await fetch(url, {
-  redirect: "manual",
-  signal,
-  headers: {
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new PublicUrlError("Only http(s) URLs are allowed.");
+  }
+
+  const addresses = await lookup(url.hostname, { all: true });
+  if (addresses.length === 0 || addresses.some(({ address }) => isBlockedAddress(address))) {
+    throw new PublicUrlError("Private network addresses are not allowed.");
+  }
+
+  // https fetches the checked IP directly (TLS servername keeps SNI/certs correct), closing the
+  // DNS-rebinding window; http stays hostname-based since raw-IP http breaks on hostname-routed proxies.
+  let target = url;
+  const headers: Record<string, string> = {
     "user-agent": "IIIT-H-Online/1.0",
     accept: "text/html,application/xhtml+xml",
-  },
-});
-
-if (response.status >= 300 && response.status < 400) {
-  const location = response.headers.get("location");
-  if (!location || redirectsLeft <= 0) {
-    throw new PublicUrlError("Too many redirects.");
+  };
+  if (url.protocol === "https:") {
+    const address = addresses.find((a) => a.family === 4) ?? addresses[0];
+    target = new URL(url.href);
+    target.hostname = address.address;
+    headers.host = url.host;
   }
 
-  let next: URL;
-  try {
-    next = new URL(location, url);
-  } catch {
-    throw new PublicUrlError("Invalid redirect target.");
+  const response = await fetch(target, {
+    redirect: "manual",
+    signal,
+    headers,
+    ...(target !== url ? { tls: { servername: url.hostname } } : {}),
+  });
+
+  if (response.status >= 300 && response.status < 400) {
+    const location = response.headers.get("location");
+    if (!location || redirectsLeft <= 0) {
+      throw new PublicUrlError("Too many redirects.");
+    }
+
+    let next: URL;
+    try {
+      next = new URL(location, url);
+    } catch {
+      throw new PublicUrlError("Invalid redirect target.");
+    }
+    return fetchPublic(next, signal, redirectsLeft - 1);
   }
-  return fetchPublic(next, signal, redirectsLeft - 1);
+
+  return response;
 }
 
-return response;
-}
 
 export function createSitesApi({ databaseUrl, adminSecret = "" }: ApiOptions) {
   const sql = databaseUrl ? neon(databaseUrl) : null;
@@ -399,8 +415,7 @@ export function createSitesApi({ databaseUrl, adminSecret = "" }: ApiOptions) {
     return rows[0] ? mapSite(rows[0]) : null;
   }
 
-
-async function fetchSiteMetadata(inputUrl: string) {
+  async function fetchSiteMetadata(inputUrl: string) {
     const url = normalizeUrl(inputUrl);
     const parsed = new URL(url);
     let html = "";
@@ -507,6 +522,10 @@ async function fetchSiteMetadata(inputUrl: string) {
     return timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
   }
 
+  function log(action: string, clientIp: string) {
+    console.log(`[admin] ${new Date().toISOString()} ${clientIp} ${action}`);
+  }
+
   function mintSessionCookie() {
     const expires = String(Date.now() + adminTtlMs);
     const signature = createHmac("sha256", adminSecret).update(expires).digest("base64url");
@@ -577,14 +596,14 @@ async function fetchSiteMetadata(inputUrl: string) {
         const body = (await request.json().catch(() => null)) as { passcode?: string } | null;
         const passcode = body?.passcode ?? "";
 
-        if (passcode.length !== adminSecret.length) {
+        const passcodeHash = createHash("sha256").update(passcode).digest();
+        const secretHash = createHash("sha256").update(adminSecret).digest();
+        if (!timingSafeEqual(passcodeHash, secretHash)) {
+          log("login failed", clientIp);
           return json({ error: "Invalid passcode." }, 401);
         }
 
-        if (!timingSafeEqual(Buffer.from(passcode), Buffer.from(adminSecret))) {
-          return json({ error: "Invalid passcode." }, 401);
-        }
-
+        log("login ok", clientIp);
         return json(
           { ok: true },
           200,
@@ -607,6 +626,7 @@ async function fetchSiteMetadata(inputUrl: string) {
       if (segments[0] === "api" && segments[1] === "admin" && segments[2] === "sites" && segments.length === 3) {
         if (method === "POST") {
           if (!isAuthenticated(request)) {
+            log(`unauthorized ${method} ${pathname}`, clientIp);
             return json({ error: "Unauthorized." }, 401);
           }
 
@@ -642,6 +662,7 @@ async function fetchSiteMetadata(inputUrl: string) {
               return json({ error: "Unable to add site." }, 500);
             }
 
+            log(`create ${site.url}`, clientIp);
             return json({
               site: mapSite(created),
               sites: await listSites(),
@@ -665,6 +686,7 @@ async function fetchSiteMetadata(inputUrl: string) {
 
         if (method === "PUT") {
           if (!isAuthenticated(request)) {
+            log(`unauthorized ${method} ${pathname}`, clientIp);
             return json({ error: "Unauthorized." }, 401);
           }
 
@@ -703,6 +725,7 @@ async function fetchSiteMetadata(inputUrl: string) {
               return json({ error: "Unable to update site." }, 500);
             }
 
+            log(`update ${id}`, clientIp);
             return json({
               site: mapSite(updated),
               sites: await listSites(),
@@ -719,6 +742,7 @@ async function fetchSiteMetadata(inputUrl: string) {
 
         if (method === "DELETE") {
           if (!isAuthenticated(request)) {
+            log(`unauthorized ${method} ${pathname}`, clientIp);
             return json({ error: "Unauthorized." }, 401);
           }
 
@@ -732,6 +756,7 @@ async function fetchSiteMetadata(inputUrl: string) {
             return json({ error: "Site not found." }, 404);
           }
 
+          log(`delete ${id}`, clientIp);
           return json({ ok: true, sites: await listSites() });
         }
       }
