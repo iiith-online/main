@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { ExternalLink, Globe, Lock, Plus } from "lucide-react";
+import { ExternalLink, Lock, Plus } from "lucide-react";
 import "./index.css";
 
 type SiteRecord = {
@@ -52,17 +52,17 @@ function SiteCard({ site }: { site: SiteRecord }) {
       href={site.url}
       target="_blank"
       rel="noopener noreferrer"
-      className="block rounded-2xl border border-white/10 bg-white/5 p-5 transition hover:border-white/20 hover:bg-white/[0.08]"
+      className="block rounded-2xl border border-white/10 bg-white/5 p-4 transition hover:border-white/20 hover:bg-white/[0.08]"
     >
-      <div className="flex items-start gap-4">
+      <div className="flex items-start gap-3">
         {site.favicon ? (
           <img
             src={site.favicon}
             alt=""
-            className="mt-1 h-10 w-10 rounded-xl border border-white/10 bg-black/20 object-cover"
+            className="mt-0.5 h-9 w-9 rounded-xl border border-white/10 bg-black/20 object-cover"
           />
         ) : (
-          <div className="mt-1 flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-black/20 text-sm font-semibold text-white">
+          <div className="mt-0.5 flex h-9 w-9 items-center justify-center rounded-xl border border-white/10 bg-black/20 text-sm font-semibold text-white">
             {initial}
           </div>
         )}
@@ -70,16 +70,12 @@ function SiteCard({ site }: { site: SiteRecord }) {
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h2 className="truncate text-lg font-semibold text-white">{site.title}</h2>
-              <p className="mt-1 text-sm text-slate-400">{hostname}</p>
+              <h2 className="truncate text-base font-semibold text-white">{site.title}</h2>
+              <p className="mt-0.5 text-sm text-slate-400">{hostname}</p>
             </div>
             <ExternalLink className="mt-1 h-4 w-4 shrink-0 text-slate-500" />
           </div>
-          <p className="mt-3 text-sm leading-6 text-slate-300">{site.description}</p>
-          <div className="mt-4 flex items-center gap-2 text-xs text-slate-500">
-            <Globe className="h-3.5 w-3.5" />
-            <span className="truncate">{site.url}</span>
-          </div>
+          <p className="mt-2 text-sm leading-5 text-slate-300 line-clamp-2">{site.description}</p>
         </div>
       </div>
     </a>
@@ -420,7 +416,7 @@ export function App() {
         ) : null}
 
         {!isAdminPage ? (
-          <section className="mt-8 space-y-4">
+          <section className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {loading ? (
               <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-6 text-sm text-slate-400">
                 Loading sites...
